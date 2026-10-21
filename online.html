@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maratón en red</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>🏁 Maratón <span>en red</span></h1>
+  </header>
+  <div id="connBanner" class="conn-banner" hidden>Reconectando…</div>
+
+  <main>
+    <!-- ENTRADA -->
+    <section id="entry" class="panel" hidden>
+      <h2>Jugar en red</h2>
+      <p id="entryMsg" class="notice" hidden></p>
+      <p id="fileWarn" class="notice" hidden>
+        Esta página necesita el servidor. Ejecuta <code>iniciar.bat</code> (o <code>node server.js</code>)
+        y abre la dirección que aparece en la ventana negra.
+      </p>
+
+      <div class="field">
+        <label for="nameInput">Tu nombre</label>
+        <input type="text" id="nameInput" maxlength="16" placeholder="Ej. Ana" autocomplete="off">
+      </div>
+
+      <button type="button" id="createBtn" class="primary">Crear sala nueva</button>
+
+      <p class="or">— o únete a una sala —</p>
+
+      <div class="field join-row">
+        <input type="text" id="codeInput" maxlength="4" placeholder="CÓDIGO" autocomplete="off" autocapitalize="characters" aria-label="Código de la sala">
+        <button type="button" id="joinBtn" class="secondary">Unirme</button>
+      </div>
+      <a class="link" href="index.html">Volver al juego en una sola pantalla</a>
+    </section>
+
+    <!-- SALA DE ESPERA -->
+    <section id="lobby" class="panel" hidden>
+      <p class="qnum">Código de la sala</p>
+      <p id="lobbyCode" class="big-code"></p>
+      <p class="hint">En su celular, que abran esta dirección y escriban el código:</p>
+      <ul id="joinUrls" class="urls"></ul>
+
+      <h3>Participantes</h3>
+      <ul id="lobbyPlayers" class="players-list"></ul>
+
+      <fieldset class="field" id="cfgPlay">
+        <legend>Modo de juego</legend>
+        <label class="radio"><input type="radio" name="cfgPlay" value="turns"> Por turnos <small>(cada pregunta es para uno, en orden)</small></label>
+        <label class="radio"><input type="radio" name="cfgPlay" value="race"> Carrera de velocidad <small>(todos responden a la vez; gana la carta quien acierte primero, y si empatan se juega piedra, papel o tijera)</small></label>
+      </fieldset>
+
+      <fieldset class="field" id="cfgDeck">
+        <legend>Cartas de kilómetros</legend>
+        <label class="radio"><input type="radio" name="cfgMode" value="auto"> Automático <small>(según los participantes)</small></label>
+        <label class="radio"><input type="radio" name="cfgMode" value="manual"> Manual</label>
+        <div id="cfgManual" class="manual" hidden>
+          <input type="range" id="cfgRange" min="10" max="60" step="1" value="24" aria-label="Cantidad de cartas">
+          <output id="cfgRangeOut">24</output>
+        </div>
+      </fieldset>
+
+      <div class="deck-preview">
+        <p>El mazo tendrá <strong id="lobbyDeckTotal">12</strong> cartas:</p>
+        <div id="lobbyChips" class="chips"></div>
+      </div>
+
+      <p id="lobbyWait" class="hint" hidden>Esperando a que el anfitrión comience…</p>
+      <button type="button" id="startBtn" class="primary" hidden>Comenzar partida</button>
+      <button type="button" class="link leaveBtn">Salir de la sala</button>
+    </section>
+
+    <!-- JUEGO -->
+    <section id="game" hidden>
+      <div id="lanes" class="lanes" aria-label="Marcador"></div>
+
+      <div class="status">
+        <span id="turnLabel" class="turn"></span>
+        <span id="timer" class="timer"></span>
+      </div>
+      <p id="deckLeft" class="deck-left"></p>
+
+      <article class="panel question">
+        <p class="qnum" id="qNum"></p>
+        <div id="countdown" class="countdown" hidden>
+          <p>La siguiente pregunta aparece en</p>
+          <p class="count-num" id="countNum">5</p>
+        </div>
+        <h2 id="qText"></h2>
+        <div id="rpsBox" class="rps" hidden></div>
+        <div id="options" class="options"></div>
+        <p id="notice" class="notice" hidden></p>
+
+        <div id="feedback" class="feedback" role="status" aria-live="polite" hidden>
+          <p id="feedbackText"></p>
+          <div id="kmCard" class="km-card" hidden></div>
+          <button type="button" id="nextBtn" class="secondary" hidden>Siguiente ahora</button>
+        </div>
+      </article>
+      <button type="button" class="link leaveBtn">Salir de la partida</button>
+    </section>
+
+    <!-- RESULTADOS -->
+    <section id="results" class="panel" hidden>
+      <h2 id="winnerTitle"></h2>
+      <ol id="ranking" class="ranking"></ol>
+      <p id="resultsWait" class="hint" hidden>Esperando al anfitrión…</p>
+      <div class="actions">
+        <button type="button" id="againBtn" class="primary" hidden>Jugar otra vez</button>
+        <button type="button" class="secondary leaveBtn">Salir</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="online.js"></script>
+</body>
+</html>

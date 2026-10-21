@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maratón de Preguntas</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>🏁 Maratón <span>de preguntas</span></h1>
+  </header>
+
+  <main>
+    <!-- CONFIGURACIÓN -->
+    <section id="setup" class="panel">
+      <h2>Configura la partida</h2>
+
+      <div class="field">
+        <label for="playersCount">Participantes</label>
+        <div class="stepper">
+          <button type="button" id="playersMinus" aria-label="Quitar participante">−</button>
+          <output id="playersCount" aria-live="polite">2</output>
+          <button type="button" id="playersPlus" aria-label="Agregar participante">+</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="label">Nombres</span>
+        <div id="names" class="names"></div>
+      </div>
+
+      <fieldset class="field">
+        <legend>Modo de juego</legend>
+        <label class="radio"><input type="radio" name="play" value="turns" checked>
+          Por turnos <small>(cada pregunta es para un participante, en orden)</small></label>
+        <label class="radio"><input type="radio" name="play" value="race">
+          Carrera de velocidad <small>(todos pueden contestar; la carta es para quien conteste primero y acierte; si falla, otro puede intentarlo)</small></label>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Quién hace las preguntas</legend>
+        <label class="radio"><input type="radio" name="host" value="presenter" checked>
+          Presentador <small>(una persona lee las preguntas y los participantes responden en voz alta)</small></label>
+        <label class="radio"><input type="radio" name="host" value="screen">
+          Solo pantalla <small>(cada participante toca su respuesta)</small></label>
+        <div id="presenterBox" class="manual">
+          <input type="text" id="presenterName" maxlength="16" placeholder="Nombre del presentador (opcional)" aria-label="Nombre del presentador">
+        </div>
+      </fieldset>
+
+      <fieldset class="field">
+        <legend>Cartas de kilómetros a jugar</legend>
+        <label class="radio"><input type="radio" name="deckMode" value="auto" checked>
+          Automático <small>(según los participantes)</small></label>
+        <label class="radio"><input type="radio" name="deckMode" value="manual">
+          Manual</label>
+        <div id="manualBox" class="manual" hidden>
+          <input type="range" id="deckRange" min="10" max="60" step="1" value="24" aria-label="Cantidad de cartas">
+          <output id="deckRangeOut">24</output>
+        </div>
+      </fieldset>
+
+      <div class="deck-preview">
+        <p>El mazo tendrá <strong id="deckTotal">12</strong> cartas:</p>
+        <div id="deckChips" class="chips"></div>
+        <p class="hint">Las cartas de 3 km son escasas, las de 2 km medianas y las de 1 km las más comunes.</p>
+      </div>
+
+      <button type="button" id="startBtn" class="primary">Comenzar</button>
+      <a class="link" href="online.html">🌐 Jugar en red: cada participante con su celular (sin presentador)</a>
+    </section>
+
+    <!-- JUEGO -->
+    <section id="game" hidden>
+      <div id="lanes" class="lanes" aria-label="Marcador"></div>
+
+      <div class="status">
+        <span id="turnLabel" class="turn"></span>
+        <span id="deckLeft" class="deck-left"></span>
+      </div>
+
+      <article class="panel question" id="questionCard" tabindex="-1">
+        <p class="qnum" id="qNum"></p>
+        <p class="host-banner" id="hostBanner" hidden></p>
+        <h2 id="qText"></h2>
+        <div id="buzzers" class="buzzers" hidden></div>
+        <div id="options" class="options"></div>
+        <button type="button" id="passBtn" class="secondary pass" hidden>Nadie contesta (pasar pregunta)</button>
+
+        <div id="feedback" class="feedback" role="status" aria-live="polite" hidden>
+          <p id="feedbackText"></p>
+          <div id="kmCard" class="km-card" hidden></div>
+        </div>
+
+        <button type="button" id="nextBtn" class="primary" hidden>Siguiente turno</button>
+      </article>
+
+      <button type="button" id="quitBtn" class="link">Terminar y volver a configurar</button>
+    </section>
+
+    <!-- RESULTADOS -->
+    <section id="results" class="panel" hidden>
+      <h2 id="winnerTitle"></h2>
+      <ol id="ranking" class="ranking"></ol>
+      <div class="actions">
+        <button type="button" id="againBtn" class="primary">Jugar otra vez</button>
+        <button type="button" id="configBtn" class="secondary">Cambiar configuración</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="questions.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
