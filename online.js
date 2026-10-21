@@ -105,6 +105,7 @@
 
   // ---------- Entrada ----------
   function showEntry(msg) {
+    document.querySelector('#boardLinkEntry').hidden = !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
     ['lobby', 'game', 'results'].forEach((k) => { el[k].hidden = true; });
     el.entry.hidden = false;
     el.entryMsg.hidden = !msg;
@@ -151,6 +152,11 @@
     const v = view;
     const host = v.you.isHost;
     el.lobbyCode.textContent = v.room;
+    document.querySelector('#playerCount').textContent = '(' + v.players.length + ' de 25)';
+    const onServer = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    const bl = document.querySelector('#boardLink');
+    bl.hidden = !(onServer && v.you.isHost);
+    bl.href = 'board.html?room=' + encodeURIComponent(v.room);
 
     el.joinUrls.textContent = '';
     const base = v.joinUrls.length ? v.joinUrls : [location.origin];
@@ -197,12 +203,25 @@
   el.startBtn.addEventListener('click', () => action('start'));
 
   // ---------- Juego ----------
+  // Con muchos jugadores el marcador del celular se resume: los 5 primeros y tu posición.
+  const COMPACT_OVER = 8;
   function renderLanes() {
     el.lanes.textContent = '';
-    view.players.forEach((p) => {
+    const all = view.players;
+    let rows = all.map((p) => ({ p, rank: 0 }));
+    const compact = all.length > COMPACT_OVER;
+    if (compact) {
+      const sorted = all.slice().sort((a, b) => b.km - a.km || b.cards - a.cards || a.name.localeCompare(b.name));
+      const rank = new Map(sorted.map((p, i) => [p.id, i + 1]));
+      const shown = sorted.slice(0, 5);
+      const mine = all.find((p) => p.id === view.you.id);
+      if (mine && !shown.includes(mine)) shown.push(mine);
+      rows = shown.map((p) => ({ p, rank: rank.get(p.id) }));
+    }
+    rows.forEach(({ p, rank }) => {
       const active = p.isTurn;
       const lane = h('div', 'lane' + (active ? ' active' : '') + (p.connected ? '' : ' off'));
-      lane.appendChild(h('span', 'lane-name', p.name + (p.id === view.you.id ? ' (tú)' : '')));
+      lane.appendChild(h('span', 'lane-name', (compact ? rank + '. ' : '') + p.name + (p.id === view.you.id ? ' (tú)' : '')));
       const track = h('div', 'track');
       const bar = h('div', 'bar');
       bar.style.width = (view.totalKm ? (p.km / view.totalKm) * 100 : 0) + '%';
@@ -211,6 +230,9 @@
       lane.appendChild(h('span', 'lane-km', p.km + ' km'));
       el.lanes.appendChild(lane);
     });
+    if (compact && all.length > rows.length) {
+      el.lanes.appendChild(h('p', 'hint', 'y ' + (all.length - rows.length) + ' jugadores más'));
+    }
   }
 
   function nameOf(id) {

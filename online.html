@@ -35,6 +35,7 @@
         <input type="text" id="codeInput" maxlength="4" placeholder="CÓDIGO" autocomplete="off" autocapitalize="characters" aria-label="Código de la sala">
         <button type="button" id="joinBtn" class="secondary">Unirme</button>
       </div>
+      <a id="boardLinkEntry" class="link" href="board.html" target="_blank" rel="noopener" hidden>📺 Abrir tablero general (solo en esta computadora)</a>
       <a class="link" href="index.html">Volver al juego en una sola pantalla</a>
     </section>
 
@@ -45,7 +46,9 @@
       <p class="hint">En su celular, que abran esta dirección y escriban el código:</p>
       <ul id="joinUrls" class="urls"></ul>
 
-      <h3>Participantes</h3>
+      <a id="boardLink" class="link" target="_blank" rel="noopener" hidden>📺 Abrir tablero general (para proyectar)</a>
+
+      <h3>Participantes <small id="playerCount"></small></h3>
       <ul id="lobbyPlayers" class="players-list"></ul>
 
       <fieldset class="field" id="cfgPlay">
@@ -59,7 +62,7 @@
         <label class="radio"><input type="radio" name="cfgMode" value="auto"> Automático <small>(según los participantes)</small></label>
         <label class="radio"><input type="radio" name="cfgMode" value="manual"> Manual</label>
         <div id="cfgManual" class="manual" hidden>
-          <input type="range" id="cfgRange" min="10" max="60" step="1" value="24" aria-label="Cantidad de cartas">
+          <input type="range" id="cfgRange" min="10" max="200" step="1" value="24" aria-label="Cantidad de cartas">
           <output id="cfgRangeOut">24</output>
         </div>
       </fieldset>

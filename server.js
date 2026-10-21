@@ -10,7 +10,8 @@ const os = require('os');
 const vm = require('vm');
 const crypto = require('crypto');
 
-const PORT = Number(process.env.PORT) || 3000;
+let PORT = Number(process.env.PORT) || 3000;
+const WANTED_PORT = PORT;
 const ROOT = __dirname;
 
 // Tiempos (milisegundos). Se pueden sobreescribir con variables de entorno.
@@ -25,7 +26,7 @@ const HOST_GRACE_MS = Number(process.env.HOST_GRACE_MS) || 15000;  // margen par
 const RPS_BEATS = { piedra: 'tijera', tijera: 'papel', papel: 'piedra' };
 
 const WEIGHTS = { 1: 0.6, 2: 0.3, 3: 0.1 };
-const MIN_PLAYERS = 2, MAX_PLAYERS = 6, MIN_CARDS = 10, MAX_CARDS = 60, CARDS_PER_PLAYER = 6;
+const MIN_PLAYERS = 2, MAX_PLAYERS = 25, MIN_CARDS = 10, MAX_CARDS = 200, CARDS_PER_PLAYER = 6;
 
 // ---------- Preguntas (mismo archivo que usa el juego local) ----------
 function loadQuestions() {
@@ -157,18 +158,39 @@ function closeRoom(room, message) {
     try { res.write(data); res.end(); } catch (e) { /* conexión cerrada */ }
   }));
   room.conns.clear();
+  room.watchers.forEach((res) => { try { res.write(data); res.end(); } catch (e) { /* conexión cerrada */ } });
+  room.watchers.clear();
   rooms.delete(room.code);
 }
 
+// Direcciones por las que los celulares pueden entrar, la mejor primero.
+// Una computadora puede tener varias redes: WiFi/Ethernet (192.168.x.x, 10.x, 172.16-31.x),
+// VPN como Tailscale (100.64-127.x), adaptadores virtuales (VirtualBox, WSL, Docker)...
+// Solo la red local real sirve para los celulares, así que esa va primero.
 function lanUrls() {
-  const out = [];
+  const found = [];
   const nets = os.networkInterfaces();
   Object.keys(nets).forEach((name) => {
     (nets[name] || []).forEach((n) => {
-      if (n.family === 'IPv4' && !n.internal) out.push('http://' + n.address + ':' + PORT);
+      if ((n.family === 'IPv4' || n.family === 4) && !n.internal) found.push({ name, address: n.address });
     });
   });
-  return out;
+  const virtualName = /virtual|vmware|vbox|hyper-v|vethernet|wsl|docker|vpn|tailscale|zerotier|loopback|bluetooth|pseudo/i;
+  function score(c) {
+    const a = c.address.split('.').map(Number);
+    if (a[0] === 169 && a[1] === 254) return 5;                              // sin DHCP (inservible)
+    if (a[0] === 100 && a[1] >= 64 && a[1] <= 127) return 4;                 // Tailscale / CGNAT
+    const priv = a[0] === 10 || (a[0] === 192 && a[1] === 168) || (a[0] === 172 && a[1] >= 16 && a[1] <= 31);
+    if (!priv) return 3;
+    if (virtualName.test(c.name)) return 2;                                  // adaptador virtual
+    return a[0] === 192 && a[1] === 168 ? 0 : 1;                             // red local real
+  }
+  const forced = (process.env.MARATHON_IP || '').trim();
+  const sorted = found.map((c, i) => ({ c, i, s: score(c) }))
+    .sort((x, y) => x.s - y.s || x.i - y.i)
+    .map((x) => 'http://' + x.c.address + ':' + PORT);
+  if (forced) sorted.unshift('http://' + forced + ':' + PORT);
+  return Array.from(new Set(sorted));
 }
 
 // ---------- Temporizadores ----------
@@ -187,7 +209,7 @@ function setTimer(room, ms, kind, fn) {
 
 // ---------- Vista que ve cada jugador (nunca incluye la respuesta correcta antes de revelar) ----------
 function view(room, pid) {
-  const me = room.players.find((p) => p.id === pid);
+  const me = pid ? room.players.find((p) => p.id === pid) : null;
   const left = { 1: 0, 2: 0, 3: 0 };
   room.deck.forEach((k) => { left[k]++; });
   const inGame = room.phase === 'question' || room.phase === 'reveal' || room.phase === 'rps';
@@ -198,13 +220,13 @@ function view(room, pid) {
     round: room.rps.round,
     showing: room.rps.showing,
     picked: room.rps.ids.reduce((o, id) => { o[id] = !!room.rps.picks[id]; return o; }, {}),
-    mine: room.rps.picks[pid] || null,
+    mine: pid ? (room.rps.picks[pid] || null) : null,
     last: room.rps.last
   } : null;
   return {
     room: room.code,
     phase: room.phase,
-    you: { id: me.id, name: me.name, isHost: room.hostId === me.id, choice: room.phase === 'question' && room.answers[pid] !== undefined ? room.answers[pid] : null },
+    you: me ? { id: me.id, name: me.name, isHost: room.hostId === me.id, choice: room.phase === 'question' && room.answers[pid] !== undefined ? room.answers[pid] : null } : null,
     config: Object.assign({}, room.config, { deckSize, comp: composition(deckSize) }),
     players: room.players.map((p) => ({
       id: p.id, name: p.name, km: p.km, cards: p.cards, hits: p.hits,
@@ -237,6 +259,10 @@ function broadcast(room) {
     const data = 'data: ' + JSON.stringify(view(room, pid)) + '\n\n';
     set.forEach((res) => { try { res.write(data); } catch (e) { /* conexión cerrada */ } });
   });
+  if (room.watchers.size) {
+    const spectator = 'data: ' + JSON.stringify(view(room, null)) + '\n\n';
+    room.watchers.forEach((res) => { try { res.write(spectator); } catch (e) { /* conexión cerrada */ } });
+  }
 }
 
 // ---------- Flujo del juego ----------
@@ -491,7 +517,7 @@ function leavePlayer(room, player) {
   room.conns.delete(player.id);
   if (room.phase === 'lobby') room.players = room.players.filter((p) => p.id !== player.id);
   checkExhausted(room);
-  if (!room.players.some((p) => isConn(room, p))) { clearTimer(room); rooms.delete(room.code); return; }
+  if (!room.players.some((p) => isConn(room, p))) { closeRoom(room, 'Todos salieron de la sala.'); return; }
   broadcast(room);
 }
 
@@ -502,8 +528,11 @@ const TYPES = {
 };
 const STATIC = {
   '/': 'index.html', '/index.html': 'index.html', '/online.html': 'online.html',
-  '/style.css': 'style.css', '/app.js': 'app.js', '/online.js': 'online.js', '/questions.js': 'questions.js'
+  '/style.css': 'style.css', '/app.js': 'app.js', '/online.js': 'online.js', '/questions.js': 'questions.js',
+  '/board.html': 'board.html', '/board.js': 'board.js', '/board.css': 'board.css'
 };
+// Solo se entregan a la computadora que corre el servidor (no a los celulares de los participantes).
+const LOCAL_ONLY = new Set(['questions.js', 'board.html', 'board.js', 'board.css']);
 
 function sendJson(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -526,9 +555,12 @@ function readJson(req) {
   });
 }
 
+// ¿La petición viene de esta misma computadora? (localhost, o su propia IP de red local)
 function isLoopback(req) {
-  const a = req.socket.remoteAddress || '';
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  const a = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+  if (a === '127.0.0.1' || a === '::1') return true;
+  const nets = os.networkInterfaces();
+  return Object.keys(nets).some((name) => (nets[name] || []).some((n) => n.address === a));
 }
 
 function serveStatic(req, res, pathname) {
@@ -536,7 +568,7 @@ function serveStatic(req, res, pathname) {
   if (!file) { res.writeHead(404); res.end('No encontrado'); return; }
   // Las preguntas con sus respuestas solo se entregan a la computadora que corre el servidor,
   // para que los demás participantes no puedan verlas desde el navegador.
-  if (file === 'questions.js' && !isLoopback(req)) { res.writeHead(404); res.end('No encontrado'); return; }
+  if (LOCAL_ONLY.has(file) && !isLoopback(req)) { res.writeHead(404); res.end('No encontrado'); return; }
   fs.readFile(path.join(ROOT, file), (err, data) => {
     if (err) { res.writeHead(404); res.end('No encontrado'); return; }
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
@@ -546,6 +578,20 @@ function serveStatic(req, res, pathname) {
 
 function findPlayer(room, pid) {
   return room.players.find((p) => p.id === pid && !p.left) || null;
+}
+
+// Tablero general: solo lectura, solo desde esta computadora, no cuenta como jugador.
+function openWatch(req, res, url) {
+  const room = isLoopback(req) ? rooms.get(String(url.searchParams.get('room') || '').toUpperCase()) : null;
+  if (!room) { res.writeHead(404); res.end(); return; }
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'
+  });
+  res.write('retry: 2000\n\n');
+  room.watchers.add(res);
+  res.write('data: ' + JSON.stringify(view(room, null)) + '\n\n');
+  req.on('close', () => { room.watchers.delete(res); });
 }
 
 function openEvents(req, res, url) {
@@ -587,6 +633,17 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (req.method === 'GET' && url.pathname === '/api/events') return openEvents(req, res, url);
+    if (req.method === 'GET' && url.pathname === '/api/watch') return openWatch(req, res, url);
+
+    if (req.method === 'GET' && url.pathname === '/api/rooms') {
+      if (!isLoopback(req)) { res.writeHead(404); res.end(); return; }
+      const list = [];
+      rooms.forEach((room) => {
+        const host = room.players.find((p) => p.id === room.hostId);
+        list.push({ code: room.code, phase: room.phase, players: room.players.filter((p) => !p.left).length, host: host ? host.name : '' });
+      });
+      return sendJson(res, 200, { rooms: list, joinUrls: lanUrls() });
+    }
 
     if (req.method === 'GET' && url.pathname === '/api/check') {
       const room = rooms.get(String(url.searchParams.get('room') || '').toUpperCase());
@@ -603,7 +660,7 @@ const server = http.createServer(async (req, res) => {
         config: { play: body.play === 'race' ? 'race' : 'turns', deckMode: 'auto', manual: 24 },
         deck: [], deckSize: 0, totalKm: 0, q: null, turn: 0, asked: 0,
         locked: [], answers: {}, correct: [], unlocked: false, rps: null, notice: '', reveal: null,
-        timer: null, deadline: null, deadlineKind: null, conns: new Map(), lastActive: Date.now()
+        timer: null, deadline: null, deadlineKind: null, conns: new Map(), watchers: new Set(), lastActive: Date.now()
       };
       const p = addPlayer(room, body.name);
       room.hostId = p.id;
@@ -616,7 +673,7 @@ const server = http.createServer(async (req, res) => {
       const room = rooms.get(String(body.room || '').toUpperCase().trim());
       if (!room) return sendJson(res, 404, { error: 'No existe una sala con ese código.' });
       if (room.phase !== 'lobby') return sendJson(res, 409, { error: 'La partida ya comenzó.' });
-      if (room.players.filter((p) => !p.left).length >= MAX_PLAYERS) return sendJson(res, 409, { error: 'La sala está llena (máximo 6).' });
+      if (room.players.filter((p) => !p.left).length >= MAX_PLAYERS) return sendJson(res, 409, { error: 'La sala está llena (máximo ' + MAX_PLAYERS + ').' });
       const p = addPlayer(room, body.name);
       broadcast(room);
       return sendJson(res, 200, { room: room.code, pid: p.id });
@@ -642,24 +699,44 @@ const server = http.createServer(async (req, res) => {
 setInterval(() => {
   rooms.forEach((room) => {
     room.conns.forEach((set) => set.forEach((res) => { try { res.write(': ping\n\n'); } catch (e) { /* nada */ } }));
+    room.watchers.forEach((res) => { try { res.write(': ping\n\n'); } catch (e) { /* nada */ } });
     if (Date.now() - room.lastActive > 10 * 60 * 1000 && !room.players.some((p) => isConn(room, p))) {
-      clearTimer(room);
-      rooms.delete(room.code);
+      closeRoom(room, 'La sala se cerró por inactividad.');
     }
   });
 }, 15000).unref();
 
-server.listen(PORT, '0.0.0.0', () => {
+// Si el puerto está ocupado (por ejemplo, otra ventana de Maratón sigue abierta), prueba con el siguiente.
+function announce() {
   console.log('\n🏁 Maratón de preguntas — servidor listo (' + QUESTIONS.length + ' preguntas)\n');
   console.log('  En esta computadora:  http://localhost:' + PORT);
+  console.log('  Tablero para proyectar (solo esta computadora):  http://localhost:' + PORT + '/board.html');
   const urls = lanUrls();
   if (urls.length) {
     console.log('  Para los celulares (mismo WiFi):');
-    urls.forEach((u) => console.log('    ' + u + '/online.html'));
+    urls.forEach((u, i) => console.log('    ' + u + '/online.html' + (i === 0 && urls.length > 1 ? '   <-- usa esta' : '')));
+    if (urls.length > 1) console.log('    (las demás son de otras redes: VPN o adaptadores virtuales; normalmente no sirven para los celulares)');
   } else {
     console.log('  (No se detectó una red local; conecta la computadora al WiFi.)');
   }
+  if (PORT !== WANTED_PORT) {
+    console.log('\n  ⚠ Usa el puerto ' + PORT + ' (el ' + WANTED_PORT + ' estaba ocupado). Si quieres el ' + WANTED_PORT + ', cierra la otra ventana negra y vuelve a abrir iniciar.bat.');
+  }
   console.log('\n  Detén el servidor con Ctrl + C.\n');
+}
+
+let portRetries = 10;
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE' && portRetries-- > 0) {
+    console.log('  ⚠ El puerto ' + PORT + ' ya está en uso (¿sigue abierta otra ventana de Maratón?). Probando el ' + (PORT + 1) + '…');
+    PORT++;
+    server.listen(PORT, '0.0.0.0');
+  } else {
+    console.error('\nNo se pudo iniciar el servidor: ' + err.message);
+    process.exit(1);
+  }
 });
+server.once('listening', announce);
+server.listen(PORT, '0.0.0.0');
 
 module.exports = { composition, buildDeck, server };

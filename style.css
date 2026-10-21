@@ -273,3 +273,8 @@ h3 { margin: 18px 0 8px; font-size: 1rem; }
 .status { min-height: 3em; align-content: flex-start; }
 #options { min-height: 0; }
 #notice { margin: 12px 0 0; }
+
+/* Muchos participantes */
+.players-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; }
+.players-list li { margin-bottom: 0; }
+h3 small { font-weight: 400; }

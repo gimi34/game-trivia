@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tablero general – Maratón</title>
+  <link rel="stylesheet" href="board.css">
+</head>
+<body>
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- ESPERANDO SALA -->
+  <section id="wait" class="screen center">
+    <h1>🏁 Maratón de preguntas</h1>
+    <p class="sub">Tablero general</p>
+    <p id="waitMsg" class="msg">Esperando una sala… Crea una desde <strong>online.html</strong> y aparecerá aquí sola.</p>
+    <div id="roomList" class="room-list"></div>
+    <p id="waitUrl" class="join-url"></p>
+  </section>
+
+  <!-- SALA DE ESPERA -->
+  <section id="lobby" class="screen center" hidden>
+    <p class="sub">Únete desde tu celular a</p>
+    <p id="lobbyUrl" class="join-url big"></p>
+    <p id="altUrls" class="alt-urls"></p>
+    <p class="sub">y escribe el código</p>
+    <p id="lobbyCode" class="code"></p>
+    <p id="lobbyCfg" class="msg"></p>
+    <div id="lobbyPlayers" class="chips-wall"></div>
+  </section>
+
+  <!-- JUEGO -->
+  <section id="game" class="screen" hidden>
+    <header class="bar-top">
+      <span id="hdrInfo"></span>
+      <span id="hdrDeck"></span>
+      <span id="hdrTimer" class="timer"></span>
+    </header>
+    <div class="game-grid">
+      <div id="board" class="board"></div>
+      <div id="stage" class="stage"></div>
+    </div>
+  </section>
+
+  <!-- RESULTADOS -->
+  <section id="results" class="screen center" hidden>
+    <h1 id="winnerTitle"></h1>
+    <div id="podium" class="podium"></div>
+    <div id="restList" class="rest"></div>
+  </section>
+
+  <script src="board.js"></script>
+</body>
+</html>
