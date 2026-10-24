@@ -278,3 +278,6 @@ h3 { margin: 18px 0 8px; font-size: 1rem; }
 .players-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; }
 .players-list li { margin-bottom: 0; }
 h3 small { font-weight: 400; }
+
+/* Toques rápidos en celulares: sin retraso ni zoom por doble toque */
+button, .option, .rps-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }

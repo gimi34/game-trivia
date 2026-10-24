@@ -2056,4 +2056,5 @@ window.QUESTIONS = [
   { q: "¿Qué órgano regula el equilibrio de agua?", a: "Riñón", w: ["Hígado","Pulmón"] },
   { q: "¿Qué órgano produce la vitamina D con el sol?", a: "Piel", w: ["Hígado","Riñón"] },
   { q: "¿Qué órgano almacena vitamina A?", a: "Hígado", w: ["Piel","Riñón"] },
+  {q: "el templo mayor de los aztecas, o Gran Toecalli, estaba consagrado a dos de sus deidades más importantes: Huitzilopochtli y", a: "Tláloc", w:["Cacama","Quetzalcóatl"] }
 ];

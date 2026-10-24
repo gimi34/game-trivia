@@ -22,7 +22,7 @@ const TIE_MS = Number(process.env.TIE_MS) || 800;               // modo carrera:
 const RPS_MS = Number(process.env.RPS_MS) || 8000;              // tiempo para elegir piedra, papel o tijera
 const RPS_SHOW_MS = Number(process.env.RPS_SHOW_MS) || 2500;    // tiempo que se muestran las elecciones de cada ronda
 const REVEAL_MS = Number(process.env.REVEAL_MS) || 5000;        // pausa antes de la siguiente pregunta
-const HOST_GRACE_MS = Number(process.env.HOST_GRACE_MS) || 15000;  // margen para que el anfitrión recargue la página sin cerrar la sala
+const HOST_GRACE_MS = Number(process.env.HOST_GRACE_MS) || 90000;  // margen para que el anfitrión recargue la página o pierda la señal sin cerrar la sala
 const RPS_BEATS = { piedra: 'tijera', tijera: 'papel', papel: 'piedra' };
 
 const WEIGHTS = { 1: 0.6, 2: 0.3, 3: 0.1 };
@@ -248,20 +248,35 @@ function view(room, pid) {
     rps,
     remainingMs: room.deadline ? Math.max(0, room.deadline - Date.now()) : null,
     deadlineKind: room.deadlineKind,
-    joinUrls: lanUrls()
+    seq: room.seq || 0,
+    hostConnected: isConn(room, room.players.find((p) => p.id === room.hostId) || { id: null, left: true }),
+    joinUrls: room.phase === 'lobby' ? lanUrls() : undefined
   };
 }
 
+// Las difusiones se agrupan (varios cambios seguidos = un solo envío) para no saturar redes lentas.
+const BROADCAST_MS = Number(process.env.BROADCAST_MS) || 40;
 function broadcast(room) {
   room.lastActive = Date.now();
+  room.seq = (room.seq || 0) + 1;
+  if (room.bcTimer) return;
+  room.bcTimer = setTimeout(() => { room.bcTimer = null; flush(room); }, BROADCAST_MS);
+}
+function send(res, data) {
+  // si el cliente va muy atrasado (red lenta) no le acumulamos mensajes: el siguiente latido lo resincroniza
+  if (res.writableLength > 64 * 1024) return;
+  try { res.write(data); } catch (e) { /* conexión cerrada */ }
+}
+function flush(room) {
+  if (rooms.get(room.code) !== room) return;
   room.conns.forEach((set, pid) => {
     if (!room.players.some((p) => p.id === pid)) return;
     const data = 'data: ' + JSON.stringify(view(room, pid)) + '\n\n';
-    set.forEach((res) => { try { res.write(data); } catch (e) { /* conexión cerrada */ } });
+    set.forEach((res) => send(res, data));
   });
   if (room.watchers.size) {
     const spectator = 'data: ' + JSON.stringify(view(room, null)) + '\n\n';
-    room.watchers.forEach((res) => { try { res.write(spectator); } catch (e) { /* conexión cerrada */ } });
+    room.watchers.forEach((res) => send(res, spectator));
   }
 }
 
@@ -382,6 +397,7 @@ function pickRps(room, player, choice) {
   if (room.phase !== 'rps' || !r || r.showing) return 'No se puede elegir ahora.';
   if (!r.ids.includes(player.id)) return 'No participas en el desempate.';
   if (!RPS_BEATS[choice]) return 'Elección inválida.';
+  if (r.picks[player.id] === choice) return null;
   if (r.picks[player.id]) return 'Ya elegiste.';
   r.picks[player.id] = choice;
   if (r.ids.every((id) => r.picks[id])) resolveRps(room);
@@ -460,7 +476,7 @@ function handleAction(room, player, body) {
       return startGame(room);
     }
     case 'answer': {
-      if (room.phase !== 'question') return 'No hay pregunta activa.';
+      if (room.phase !== 'question') return room.answers && room.answers[player.id] !== undefined ? null : 'No hay pregunta activa.';
       if (!room.unlocked) return 'Espera: las respuestas aún están bloqueadas.';
       const i = Number(body.index);
       if (![0, 1, 2].includes(i)) return 'Respuesta inválida.';
@@ -469,6 +485,7 @@ function handleAction(room, player, body) {
         if (room.q.options[i].c) reveal(room, player, null, i);
         else reveal(room, null, 'Incorrecto.', i);
       } else {
+        if (room.answers[player.id] === i) return null; // reintento del mismo toque: ya estaba registrado
         if (room.locked.includes(player.id) || room.answers[player.id] !== undefined) return 'Ya contestaste esta pregunta.';
         room.answers[player.id] = i;
         if (room.q.options[i].c) {
@@ -588,6 +605,7 @@ function openWatch(req, res, url) {
     'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'
   });
+  req.socket.setTimeout(0); req.socket.setNoDelay(true);
   res.write('retry: 2000\n\n');
   room.watchers.add(res);
   res.write('data: ' + JSON.stringify(view(room, null)) + '\n\n');
@@ -602,9 +620,11 @@ function openEvents(req, res, url) {
     'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'
   });
+  req.socket.setTimeout(0); req.socket.setNoDelay(true);
   res.write('retry: 2000\n\n');
   if (!room.conns.has(player.id)) room.conns.set(player.id, new Set());
   room.conns.get(player.id).add(res);
+  res.write('data: ' + JSON.stringify(view(room, player.id)) + '\n\n');  // foto inmediata para quien se conecta
   broadcast(room);
   req.on('close', () => {
     const set = room.conns.get(player.id);
@@ -618,10 +638,10 @@ function openEvents(req, res, url) {
       }, HOST_GRACE_MS);
     }
     if (room.phase === 'lobby') {
-      // en la sala de espera, quien no vuelve en 30 s sale de la lista
+      // en la sala de espera, quien no vuelve en 60 s sale de la lista
       setTimeout(() => {
         if (rooms.has(room.code) && room.phase === 'lobby' && !isConn(room, player)) leavePlayer(room, player);
-      }, 30000);
+      }, 60000);
     } else {
       checkExhausted(room);
     }
@@ -649,6 +669,14 @@ const server = http.createServer(async (req, res) => {
       const room = rooms.get(String(url.searchParams.get('room') || '').toUpperCase());
       const ok = !!room && !!findPlayer(room, url.searchParams.get('pid'));
       return sendJson(res, ok ? 200 : 404, { ok });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/state') {
+      const room = rooms.get(String(url.searchParams.get('room') || '').toUpperCase());
+      const player = room && findPlayer(room, url.searchParams.get('pid'));
+      if (!room || !player) return sendJson(res, 404, { error: 'La sala ya no existe.' });
+      room.lastActive = Date.now();
+      return sendJson(res, 200, view(room, player.id));
     }
 
     if (req.method === 'POST' && url.pathname === '/api/create') {
@@ -698,13 +726,14 @@ const server = http.createServer(async (req, res) => {
 // Mantiene vivas las conexiones y limpia salas abandonadas.
 setInterval(() => {
   rooms.forEach((room) => {
-    room.conns.forEach((set) => set.forEach((res) => { try { res.write(': ping\n\n'); } catch (e) { /* nada */ } }));
-    room.watchers.forEach((res) => { try { res.write(': ping\n\n'); } catch (e) { /* nada */ } });
+    const beat = 'event: ping\ndata: ' + (room.seq || 0) + '\n\n';
+    room.conns.forEach((set) => set.forEach((res) => send(res, beat)));
+    room.watchers.forEach((res) => send(res, beat));
     if (Date.now() - room.lastActive > 10 * 60 * 1000 && !room.players.some((p) => isConn(room, p))) {
       closeRoom(room, 'La sala se cerró por inactividad.');
     }
   });
-}, 15000).unref();
+}, 5000).unref();
 
 // Si el puerto está ocupado (por ejemplo, otra ventana de Maratón sigue abierta), prueba con el siguiente.
 function announce() {
@@ -736,6 +765,8 @@ server.on('error', (err) => {
     process.exit(1);
   }
 });
+server.on('connection', (sock) => { sock.setNoDelay(true); sock.setKeepAlive(true, 10000); });
+server.keepAliveTimeout = 65000;
 server.once('listening', announce);
 server.listen(PORT, '0.0.0.0');
 

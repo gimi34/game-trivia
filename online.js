@@ -41,26 +41,99 @@
   }
 
   // ---------- Red ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function request(url, opts, timeoutMs) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const t = ctl ? setTimeout(() => ctl.abort(), timeoutMs || 8000) : null;
+    try {
+      return await fetch(url, Object.assign({ cache: 'no-store' }, opts || {}, ctl ? { signal: ctl.signal } : {}));
+    } finally { if (t) clearTimeout(t); }
+  }
+
   async function api(url, body) {
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 10000);
     let j = {};
     try { j = await r.json(); } catch (e) { /* respuesta vacía */ }
-    if (!r.ok) throw new Error(j.error || 'No se pudo completar la acción.');
+    if (!r.ok) { const err = new Error(j.error || 'No se pudo completar la acción.'); err.status = r.status; throw err; }
     return j;
   }
 
-  function action(type, extra) {
-    if (!session) return Promise.resolve();
-    return api('/api/action', Object.assign({ room: session.room, pid: session.pid, type }, extra || {}))
-      .catch((e) => { flash(e.message); });
+  // Las acciones se reintentan si la red falla: el servidor las trata como idempotentes
+  // (repetir un toque ya registrado no tiene efecto), así que ningún toque se pierde ni se duplica.
+  async function sendAction(type, extra) {
+    if (!session) return;
+    const body = Object.assign({ room: session.room, pid: session.pid, type }, extra || {});
+    const delays = [0, 400, 900, 1800, 3000, 4500];
+    let lastErr = null;
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await sleep(delays[i]);
+      if (!session) return;
+      try { await api('/api/action', body); return; } catch (e) {
+        lastErr = e;
+        if (e.status === 404) { dropSession('La sala ya no está disponible. Crea una nueva o únete a otra.'); return; }
+        // el servidor sí respondió con un rechazo: si ya reintentamos, casi seguro es un duplicado inofensivo
+        if (e.status) { if (i > 0) { resync(); return; } throw e; }
+      }
+    }
+    throw lastErr || new Error('Sin conexión.');
   }
 
+  function action(type, extra) {
+    return sendAction(type, extra).catch((e) => { flash(e.message === 'Failed to fetch' || e.name === 'AbortError' ? 'Sin conexión: no se pudo enviar. Intenta de nuevo.' : e.message); throw e; }).catch(() => {});
+  }
+
+  // Un solo aviso superior con prioridades: avisos puntuales > conexión > anfitrión sin señal.
+  let flashMsg = '';
   let flashTimer = null;
-  function flash(msg) {
-    el.banner.hidden = false;
+  let connMsg = '';
+  function updateBanner() {
+    let msg = flashMsg || connMsg;
+    if (!msg && view && view.phase !== 'lobby' && view.phase !== 'results' && view.hostConnected === false && !view.you.isHost) {
+      msg = 'El anfitrión perdió la señal. Esperando a que vuelva…';
+    }
+    el.banner.hidden = !msg;
     el.banner.textContent = msg;
+  }
+  function flash(msg) {
+    flashMsg = msg;
+    updateBanner();
     clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => { el.banner.hidden = true; }, 3500);
+    flashTimer = setTimeout(() => { flashMsg = ''; updateBanner(); }, 3500);
+  }
+  function setConn(msg) { connMsg = msg || ''; updateBanner(); }
+
+  function dropSession(msg) {
+    if (source) source.close();
+    session = null; view = null; saveSession();
+    setConn('');
+    showEntry(msg || 'La partida terminó.');
+  }
+
+  // Último mensaje recibido del servidor (datos o latido): si pasa mucho tiempo, la conexión está muerta.
+  let lastEventAt = Date.now();
+  let resyncing = false;
+
+  function applyView(data) {
+    if (data.phase === 'closed') { dropSession(data.message); return; }
+    if (view && data.room === view.room && data.seq < view.seq && data.phase === view.phase) return; // llegó tarde y desordenado
+    view = data;
+    viewAt = Date.now();
+    lastEventAt = Date.now();
+    setConn('');
+    render();
+  }
+
+  // Pide el estado completo por una petición normal (sirve cuando el canal en vivo va lento o se perdió).
+  async function resync() {
+    if (!session || resyncing) return;
+    resyncing = true;
+    try {
+      const r = await request('/api/state?room=' + encodeURIComponent(session.room) + '&pid=' + encodeURIComponent(session.pid), {}, 8000);
+      if (r.status === 404) { dropSession('La sala ya no está disponible. Crea una nueva o únete a otra.'); return; }
+      if (r.ok) applyView(await r.json());
+    } catch (e) { /* sin red: el vigilante lo volverá a intentar */ }
+    finally { resyncing = false; }
   }
 
   function connect() {
@@ -68,40 +141,50 @@
     if (!session) return;
     const src = new EventSource('/api/events?room=' + encodeURIComponent(session.room) + '&pid=' + encodeURIComponent(session.pid));
     source = src;
-    source.onopen = () => { el.banner.hidden = true; };
-    source.onmessage = (e) => {
+    lastEventAt = Date.now();
+    src.onopen = () => { lastEventAt = Date.now(); setConn(''); };
+    src.onmessage = (e) => {
+      if (src !== source) return;
       let data;
       try { data = JSON.parse(e.data); } catch (err) { return; }
-      if (data.phase === 'closed') {
-        source.close();
-        session = null; view = null; saveSession();
-        el.banner.hidden = true;
-        showEntry(data.message || 'La partida terminó.');
-        return;
-      }
-      view = data;
-      viewAt = Date.now();
-      el.banner.hidden = true;
-      render();
+      applyView(data);
     };
-    source.onerror = async () => {
+    src.addEventListener('ping', (e) => {
+      if (src !== source) return;
+      lastEventAt = Date.now();
+      setConn('');
+      // si el servidor ya va en otra versión que la nuestra, se perdió algo: pedirlo completo
+      if (view && Number(e.data) > view.seq) resync();
+    });
+    src.onerror = async () => {
       if (unloading || src !== source) return;
-      el.banner.hidden = false;
-      el.banner.textContent = 'Reconectando…';
+      setConn('Conexión lenta, reconectando…');
       if (src.readyState !== EventSource.CLOSED) return; // el navegador reintenta solo
-      // El navegador se rindió: ¿la sala sigue existiendo?
       try {
-        const r = await fetch('/api/check?room=' + encodeURIComponent(session.room) + '&pid=' + encodeURIComponent(session.pid));
-        if (r.status === 404) {
-          session = null; view = null; saveSession();
-          el.banner.hidden = true;
-          showEntry('La sala ya no está disponible. Crea una nueva o únete a otra.');
-          return;
-        }
+        const r = await request('/api/check?room=' + encodeURIComponent(session.room) + '&pid=' + encodeURIComponent(session.pid), {}, 6000);
+        if (r.status === 404) { dropSession('La sala ya no está disponible. Crea una nueva o únete a otra.'); return; }
       } catch (e) { /* sin red: se reintenta abajo */ }
       setTimeout(() => { if (session && src === source) connect(); }, 1500);
     };
   }
+
+  // Vigilante: sin noticias del servidor por 14 s (el latido llega cada 5) → reabrir el canal y pedir el estado.
+  setInterval(() => {
+    if (!session || unloading) return;
+    const quiet = Date.now() - lastEventAt;
+    if (quiet > 14000) { setConn('Conexión lenta, reconectando…'); connect(); resync(); }
+    else if (quiet > 7000) { resync(); }
+  }, 2000);
+
+  function wake() {
+    if (!session) return;
+    resync();
+    if (!source || source.readyState !== EventSource.OPEN) connect();
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
+  window.addEventListener('online', wake);
+  window.addEventListener('pageshow', (e) => { unloading = false; if (e.persisted) wake(); });
+  window.addEventListener('offline', () => { if (session) setConn('Sin internet en este dispositivo…'); });
 
   // ---------- Entrada ----------
   function showEntry(msg) {
@@ -136,7 +219,7 @@
 
   document.querySelectorAll('.leaveBtn').forEach((b) => b.addEventListener('click', () => {
     const s = session;
-    session = null; view = null; saveSession();
+    session = null; view = null; saveSession(); setConn('');
     if (source) source.close();
     if (s) api('/api/action', { room: s.room, pid: s.pid, type: 'leave' }).catch(() => {});
     showEntry('');
@@ -159,8 +242,8 @@
     bl.href = 'board.html?room=' + encodeURIComponent(v.room);
 
     el.joinUrls.textContent = '';
-    const base = v.joinUrls.length ? v.joinUrls : [location.origin];
-    base.forEach((u) => el.joinUrls.appendChild(h('li', '', u.replace(/\/$/, '') + '/online.html')));
+    const base = v.joinUrls && v.joinUrls.length ? v.joinUrls : [location.origin];
+    base.slice(0, 2).forEach((u) => el.joinUrls.appendChild(h('li', '', u.replace(/\/$/, '') + '/online.html')));
 
     el.lobbyPlayers.textContent = '';
     v.players.forEach((p) => {
@@ -243,53 +326,110 @@
   const RPS_EMOJI = { piedra: '✊', papel: '✋', tijera: '✌️' };
   const RPS_LABEL = { piedra: 'Piedra', papel: 'Papel', tijera: 'Tijera' };
 
+  // La caja de piedra/papel/tijera se construye una sola vez; después solo se actualizan textos y estados,
+  // así los botones no se reemplazan mientras alguien los está tocando.
+  const rpsUi = (() => {
+    const title = h('p', 'rps-title');
+    const result = h('div', 'rps-result');
+    const outcome = h('p', 'rps-outcome');
+    const prev = h('p', 'hint');
+    const btns = h('div', 'rps-buttons');
+    const buttons = {};
+    ['piedra', 'papel', 'tijera'].forEach((c) => {
+      const b = h('button', 'rps-btn');
+      b.type = 'button';
+      b.appendChild(h('span', 'rps-emoji', RPS_EMOJI[c]));
+      b.appendChild(h('span', '', RPS_LABEL[c]));
+      b.addEventListener('click', () => pickRps(c));
+      btns.appendChild(b);
+      buttons[c] = b;
+    });
+    const who = h('p', 'hint');
+    const msg = h('p', 'hint');
+    [title, result, outcome, prev, btns, who, msg].forEach((n) => el.rpsBox.appendChild(n));
+    return { title, result, outcome, prev, btns, buttons, who, msg };
+  })();
+  let pendingRps = null; // { round, choice }
+
+  function pickRps(c) {
+    const r = view && view.rps;
+    if (!r || r.mine || r.showing || !r.ids.includes(view.you.id)) return;
+    pendingRps = { key: r.round + ':' + r.ids.join(','), choice: c };
+    renderRps();
+    const mark = pendingRps;
+    sendAction('rps', { choice: c }).catch((e) => {
+      flash(e.status ? e.message : 'Sin conexión: tu elección no llegó. Intenta de nuevo.');
+      if (pendingRps === mark) { pendingRps = null; if (view) renderRps(); }
+    });
+    // si el envío falla del todo, se libera para poder volver a elegir
+    setTimeout(() => { if (pendingRps && pendingRps.choice === c && view && view.rps && !view.rps.mine) { pendingRps = null; renderRps(); } }, 30000);
+  }
+
   function renderRps() {
     const v = view;
     const r = v.rps;
     el.rpsBox.hidden = !r;
-    if (!r) return;
-    el.rpsBox.textContent = '';
+    if (!r) { pendingRps = null; return; }
+    const key = r.round + ':' + r.ids.join(',');
+    if (pendingRps && pendingRps.key !== key) pendingRps = null;
+    const mine = r.mine || (pendingRps ? pendingRps.choice : null);
     const iAm = r.ids.includes(v.you.id);
-    el.rpsBox.appendChild(h('p', 'rps-title', 'Ronda ' + r.round + ': ' + r.ids.map(nameOf).join(' vs ')));
+    const u = rpsUi;
+    u.title.textContent = 'Ronda ' + r.round + ': ' + r.ids.map(nameOf).join(' vs ');
 
-    if (r.showing && r.last) {
-      const row = h('div', 'rps-result');
+    const showRes = !!(r.showing && r.last);
+    u.result.hidden = u.outcome.hidden = !showRes;
+    u.btns.hidden = u.who.hidden = u.msg.hidden = showRes;
+    u.prev.hidden = showRes || !r.last;
+    if (showRes) {
+      u.result.textContent = '';
       r.ids.forEach((id) => {
         const box = h('div', 'rps-pick');
         box.appendChild(h('span', 'rps-emoji', RPS_EMOJI[r.last.choices[id]] || '?'));
         box.appendChild(h('span', 'rps-name', nameOf(id)));
         if (r.last.survivors.includes(id) && !r.last.draw && r.last.survivors.length < r.ids.length) box.classList.add('won');
-        row.appendChild(box);
+        u.result.appendChild(box);
       });
-      el.rpsBox.appendChild(row);
       let text;
       if (r.last.draw) text = '¡Empate! Vuelven a elegir.';
       else if (r.last.survivors.length === 1) text = '¡Gana ' + nameOf(r.last.survivors[0]) + '!';
       else text = 'Siguen ' + r.last.survivors.map(nameOf).join(' y ') + ': vuelven a elegir.';
-      el.rpsBox.appendChild(h('p', 'rps-outcome', text));
+      u.outcome.textContent = text;
       return;
     }
+    if (r.last) u.prev.textContent = r.last.draw ? 'La ronda anterior fue empate.' : 'Siguen los que empataron.';
+    u.btns.hidden = !iAm;
+    Object.keys(u.buttons).forEach((c) => {
+      const b = u.buttons[c];
+      b.disabled = !!mine;
+      b.classList.toggle('picked', mine === c);
+    });
+    u.who.textContent = r.ids.map((id) => nameOf(id) + (r.picked[id] || (id === v.you.id && mine) ? ' ✓' : ' …')).join('   ');
+    u.msg.textContent = iAm
+      ? (mine ? (r.mine ? 'Esperando a los demás…' : 'Enviando…') : 'Elige antes de que se acabe el tiempo.')
+      : 'Los jugadores empatados están eligiendo…';
+  }
 
-    if (r.last) {
-      el.rpsBox.appendChild(h('p', 'hint', r.last.draw ? 'La ronda anterior fue empate.' : 'Siguen los que empataron.'));
-    }
-    if (iAm) {
-      const btns = h('div', 'rps-buttons');
-      ['piedra', 'papel', 'tijera'].forEach((c) => {
-        const b = h('button', 'rps-btn' + (r.mine === c ? ' picked' : ''));
-        b.type = 'button';
-        b.disabled = !!r.mine;
-        b.appendChild(h('span', 'rps-emoji', RPS_EMOJI[c]));
-        b.appendChild(h('span', '', RPS_LABEL[c]));
-        b.addEventListener('click', () => action('rps', { choice: c }));
-        btns.appendChild(b);
-      });
-      el.rpsBox.appendChild(btns);
-    }
-    el.rpsBox.appendChild(h('p', 'hint', r.ids.map((id) => nameOf(id) + (r.picked[id] ? ' ✓' : ' …')).join('   ')));
-    el.rpsBox.appendChild(h('p', 'hint', iAm
-      ? (r.mine ? 'Esperando a los demás…' : 'Elige antes de que se acabe el tiempo.')
-      : 'Los jugadores empatados están eligiendo…'));
+  let pendingAnswer = null; // { asked, index }
+  let optionsKey = '';
+
+  function chooseAnswer(i) {
+    const v = view;
+    if (!v || v.phase !== 'question' || !v.unlocked || pendingAnswer) return;
+    const me = v.players.find((p) => p.id === v.you.id);
+    const race = v.config.play === 'race';
+    if (race ? (me.locked || me.answered) : v.turnId !== v.you.id) return;
+    pendingAnswer = { asked: v.asked, index: i };
+    renderGame();   // respuesta visible al instante, sin esperar a la red
+    const mark = pendingAnswer;
+    sendAction('answer', { index: i }).catch((e) => {
+      flash(e.status ? e.message : 'Sin conexión: tu respuesta no llegó. Intenta de nuevo.');
+      if (pendingAnswer === mark) { pendingAnswer = null; if (view) render(); }
+    });
+    // si no se confirma (cortes largos), se libera para que pueda tocar de nuevo
+    setTimeout(() => {
+      if (pendingAnswer === mark) { pendingAnswer = null; if (view) render(); resync(); }
+    }, 30000);
   }
 
   function renderGame() {
@@ -326,23 +466,36 @@
     renderRps();
 
     el.options.hidden = inRps || waiting;
-    el.options.textContent = '';
-    (waiting ? [] : v.question.options).forEach((text, i) => {
-      const b = h('button', 'option');
-      b.type = 'button';
-      b.appendChild(h('span', 'letter', 'ABC'[i]));
-      b.appendChild(h('span', 'text', text));
-      b.disabled = !canAnswer;
-      if (inQuestion && !canAnswer && !me.answered) b.classList.add('idle');
-      if (inQuestion && v.you.choice === i) b.classList.add('picked');
+    // pendiente de envío (toque ya hecho, aún sin confirmación del servidor)
+    if (pendingAnswer && (pendingAnswer.asked !== v.asked || !inQuestion || v.you.choice !== null)) pendingAnswer = null;
+    const sending = pendingAnswer ? pendingAnswer.index : null;
+    const optKey = waiting ? '' : v.asked + '|' + v.question.options.join('\u0001');
+    if (optKey !== optionsKey) {
+      // Los botones solo se reconstruyen cuando cambia la pregunta; no en cada actualización.
+      optionsKey = optKey;
+      el.options.textContent = '';
+      (waiting ? [] : v.question.options).forEach((text, i) => {
+        const b = h('button', 'option');
+        b.type = 'button';
+        b.appendChild(h('span', 'letter', 'ABC'[i]));
+        b.appendChild(h('span', 'text', text));
+        b.addEventListener('click', () => chooseAnswer(i));
+        el.options.appendChild(b);
+      });
+    }
+    Array.prototype.forEach.call(el.options.children, (b, i) => {
+      const chosen = (inQuestion && v.you.choice === i) || sending === i;
+      b.disabled = !canAnswer || sending !== null;
+      b.className = 'option'
+        + (inQuestion && !canAnswer && !me.answered && sending === null ? ' idle' : '')
+        + (chosen ? ' picked' : '');
       if (v.reveal) {
         b.disabled = true;
         if (i === v.reveal.correctIndex) b.classList.add('correct');
         else if (i === v.reveal.chosenIndex) b.classList.add('wrong');
       }
-      b.addEventListener('click', () => action('answer', { index: i }));
-      el.options.appendChild(b);
     });
+    if (sending !== null && v.phase === 'question') el.turnLabel.textContent = 'Enviando respuesta…';
 
     // Resultado de la pregunta
     el.feedback.hidden = !v.reveal;

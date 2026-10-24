@@ -26,7 +26,20 @@ Reglas del modo en red:
 - Hasta 25 participantes por sala. Con muchos, el mazo crece solo (6 cartas por jugador, hasta 200) y el celular muestra un marcador resumido.
 - Los tiempos se cambian al inicio de `server.js` (LOCK_MS, REVEAL_MS, TIE_MS…).
 
+Si la computadora tiene varias redes (WiFi, VPN, adaptadores virtuales), el servidor pone primero la del WiFi/red local.
+Si aun así sale otra, fíjala al abrir: `set MARATHON_IP=192.168.0.45` y luego `node server.js`.
+
 Si los celulares no conectan, permite a Node.js en el Firewall de Windows (redes privadas).
+
+## Redes lentas o inestables
+
+El modo en red tolera conexiones malas:
+
+- Al tocar una respuesta se marca al instante y se reintenta sola si la red falla (no se pierde ni se duplica).
+- Los botones no se reconstruyen con cada actualización, así que no se "mueven" mientras los tocas.
+- Si el celular pierde la señal, se reconecta solo y recupera el estado actual (también al volver a la app).
+- El anfitrión tiene 90 s para volver antes de que se cierre la sala (`HOST_GRACE_MS` lo cambia, en milisegundos). En la sala de espera, un jugador sin conexión sale de la lista a los 60 s.
+- Consejo: en los celulares desactiva el bloqueo automático de pantalla durante la partida.
 
 ## Preguntas sin repetir
 Las preguntas salen en orden aleatorio y ninguna se repite hasta agotar todo el banco; después se vuelve a barajar.

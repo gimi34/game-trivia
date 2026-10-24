@@ -91,6 +91,7 @@
       joinUrls = data.joinUrls || joinUrls;
       render();
     };
+    src.addEventListener('ping', () => { if (src === source) el.banner.hidden = true; });
     src.onerror = () => {
       if (src !== source) return;
       if (src.readyState === EventSource.CLOSED) {
@@ -117,7 +118,7 @@
     const v = view;
     el.lobbyUrl.textContent = joinUrl();
     // Si el servidor ve otras redes (VPN, adaptadores virtuales), se muestran pequeñas por si la principal no sirve.
-    const alts = joinUrls.slice(1).map((u) => u.replace(/\/$/, '') + '/online.html');
+    const alts = joinUrls.slice(1, 3).map((u) => u.replace(/\/$/, '') + '/online.html');
     el.altUrls.textContent = alts.length ? 'Si no abre, prueba: ' + alts.join('  ·  ') : '';
     el.lobbyCode.textContent = v.room;
     el.lobbyCfg.textContent = (v.config.play === 'race' ? 'Carrera de velocidad' : 'Por turnos') +
